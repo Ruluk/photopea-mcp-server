@@ -24,6 +24,7 @@ import type {
   FillSelectionParams,
   ExportImageParams,
 } from "./types.js";
+import { applyAdjustmentParamsSchema, applyFilterParamsSchema, parseCurvePoints } from "./operation-schemas.js";
 
 // ---------------------------------------------------------------------------
 // Exported helpers
@@ -549,89 +550,62 @@ export function buildAddShape(params: AddShapeParams): string {
 // ---------------------------------------------------------------------------
 
 export function buildApplyAdjustment(params: ApplyAdjustmentParams): string {
-  const { type, settings = {} } = params;
-  const lines: string[] = [];
-  const layer = `app.activeDocument.activeLayer`;
-
-  switch (type) {
-    case "brightness": {
-      const brightness = (settings.brightness as number) ?? 0;
-      const contrast = (settings.contrast as number) ?? 0;
-      lines.push(`${layer}.adjustBrightnessContrast(${brightness}, ${contrast});`);
-      break;
-    }
-    case "hue_sat": {
-      const hue = (settings.hue as number) ?? 0;
-      const saturation = (settings.saturation as number) ?? 0;
-      const lightness = (settings.lightness as number) ?? 0;
-      lines.push(`${layer}.adjustColorBalance(${hue}, ${saturation}, ${lightness});`);
-      break;
-    }
-    case "levels": {
-      const inputMin = (settings.inputMin as number) ?? 0;
-      const inputMax = (settings.inputMax as number) ?? 255;
-      const gamma = (settings.gamma as number) ?? 1;
-      const outputMin = (settings.outputMin as number) ?? 0;
-      const outputMax = (settings.outputMax as number) ?? 255;
-      lines.push(
-        `${layer}.adjustLevels(${inputMin}, ${inputMax}, ${gamma}, ${outputMin}, ${outputMax});`
-      );
-      break;
-    }
-    case "curves": {
-      const curvePoints = typeof settings.points === "string" && /^[\[\]0-9,.\s-]+$/.test(settings.points)
-        ? settings.points
-        : "[[0,0],[255,255]]";
-      lines.push(`${layer}.adjustCurves(${curvePoints});`);
-      break;
-    }
-    default:
-      lines.push(`// Unknown adjustment type: ${type}`);
-  }
-
-  lines.push(`app.echoToOE('ok');`);
-  return lines.join("\n");
+  const validated = applyAdjustmentParamsSchema.parse(params);
+  return `${adjustmentCommand(validated)}\napp.echoToOE('ok');`;
 }
 
 export function buildApplyFilter(params: ApplyFilterParams): string {
-  const { type, settings = {} } = params;
-  const lines: string[] = [];
+  const validated = applyFilterParamsSchema.parse(params);
+  return `${filterCommand(validated)}\napp.echoToOE('ok');`;
+}
+
+function adjustmentCommand(params: ApplyAdjustmentParams): string {
   const layer = `app.activeDocument.activeLayer`;
 
-  switch (type) {
+  switch (params.type) {
+    case "brightness": {
+      const { brightness = 0, contrast = 0 } = params.settings ?? {};
+      return `${layer}.adjustBrightnessContrast(${brightness}, ${contrast});`;
+    }
+    case "hue_sat": {
+      const { hue = 0, saturation = 0, lightness = 0 } = params.settings ?? {};
+      return `${layer}.adjustColorBalance(${hue}, ${saturation}, ${lightness});`;
+    }
+    case "levels": {
+      const { inputMin = 0, inputMax = 255, gamma = 1, outputMin = 0, outputMax = 255 } = params.settings ?? {};
+      return `${layer}.adjustLevels(${inputMin}, ${inputMax}, ${gamma}, ${outputMin}, ${outputMax});`;
+    }
+    case "curves": {
+      const points = parseCurvePoints(params.settings?.points ?? [[0, 0], [255, 255]]);
+      return `${layer}.adjustCurves(${JSON.stringify(points)});`;
+    }
+  }
+}
+
+function filterCommand(params: ApplyFilterParams): string {
+  const layer = `app.activeDocument.activeLayer`;
+
+  switch (params.type) {
     case "gaussian_blur": {
-      const radius = (settings.radius as number) ?? 2;
-      lines.push(`${layer}.applyGaussianBlur(${radius});`);
-      break;
+      const { radius = 2 } = params.settings ?? {};
+      return `${layer}.applyGaussianBlur(${radius});`;
     }
     case "sharpen": {
-      lines.push(`${layer}.applySharpen();`);
-      break;
+      return `${layer}.applySharpen();`;
     }
     case "unsharp_mask": {
-      const amount = (settings.amount as number) ?? 50;
-      const radius = (settings.radius as number) ?? 1;
-      const threshold = (settings.threshold as number) ?? 0;
-      lines.push(`${layer}.applyUnSharpMask(${amount}, ${radius}, ${threshold});`);
-      break;
+      const { amount = 50, radius = 1, threshold = 0 } = params.settings ?? {};
+      return `${layer}.applyUnSharpMask(${amount}, ${radius}, ${threshold});`;
     }
     case "noise": {
-      const amount = (settings.amount as number) ?? 10;
-      lines.push(`${layer}.applyAddNoise(${amount});`);
-      break;
+      const { amount = 10 } = params.settings ?? {};
+      return `${layer}.applyAddNoise(${amount});`;
     }
     case "motion_blur": {
-      const angle = (settings.angle as number) ?? 0;
-      const distance = (settings.distance as number) ?? 10;
-      lines.push(`${layer}.applyMotionBlur(${angle}, ${distance});`);
-      break;
+      const { angle = 0, distance = 10 } = params.settings ?? {};
+      return `${layer}.applyMotionBlur(${angle}, ${distance});`;
     }
-    default:
-      lines.push(`// Unknown filter type: ${type}`);
   }
-
-  lines.push(`app.echoToOE('ok');`);
-  return lines.join("\n");
 }
 
 export function buildTransformLayer(params: TransformLayerParams): string {

@@ -14,6 +14,12 @@ import {
   escapeString,
 } from "../bridge/script-builder.js";
 import { readLocalFile, fetchUrlToBuffer, isUrl } from "../utils/file-io.js";
+import {
+  applyAdjustmentParamsSchema,
+  applyAdjustmentSettingsSchema,
+  applyFilterParamsSchema,
+  applyFilterSettingsSchema,
+} from "../bridge/operation-schemas.js";
 
 const layerTarget = z.union([z.string(), z.number()]).describe("Layer name (string) or index (number)");
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/).describe("Color as hex string (e.g. #ff0000)");
@@ -99,11 +105,13 @@ export function registerImageTools(server: McpServer, bridge: PhotopeaBridge): v
     description: "Apply a destructive image adjustment to the active layer's pixel data. Use select_layer to target a specific layer first. Modifies pixels directly — use undo to revert if needed.",
     inputSchema: {
       type: z.enum(["brightness", "hue_sat", "levels", "curves"]).describe("Adjustment type: 'brightness' for brightness/contrast, 'hue_sat' for hue/saturation/lightness, 'levels' for input levels, 'curves' for tone curves"),
-      settings: z.record(z.union([z.number(), z.string(), z.boolean()])).optional().describe("Key-value settings for the adjustment. For brightness: { brightness: -100..100, contrast: -100..100 }. For hue_sat: { hue: -180..180, saturation: -100..100, lightness: -100..100 }. For levels: { inputBlack: 0..255, inputWhite: 0..255 }"),
+      settings: applyAdjustmentSettingsSchema.optional().describe("Settings for the selected adjustment. Unknown or mismatched settings are rejected."),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (params) => {
-    const script = buildApplyAdjustment(params);
+    const validated = applyAdjustmentParamsSchema.safeParse(params);
+    if (!validated.success) return { isError: true, content: [{ type: "text" as const, text: validated.error.message }] };
+    const script = buildApplyAdjustment(validated.data);
     bridge.sendActivity({ type: "activity", id: "", tool: "apply_adjustment", summary: `Apply ${params.type} adjustment` });
     const result = await bridge.executeScript(script);
     if (!result.success) return { isError: true, content: [{ type: "text" as const, text: result.error || "Failed to apply adjustment" }] };
@@ -116,11 +124,13 @@ export function registerImageTools(server: McpServer, bridge: PhotopeaBridge): v
     description: "Apply a destructive filter effect to the active layer's pixel data. Use select_layer to target a specific layer first. Modifies pixels directly — use undo to revert if needed.",
     inputSchema: {
       type: z.enum(["gaussian_blur", "sharpen", "unsharp_mask", "noise", "motion_blur"]).describe("Filter type to apply to the active layer"),
-      settings: z.record(z.union([z.number(), z.string(), z.boolean()])).optional().describe("Key-value settings for the filter. For gaussian_blur: { radius: pixels }. For unsharp_mask: { amount: 1-500, radius: 0.1-250, threshold: 0-255 }. For motion_blur: { angle: degrees, distance: pixels }. For noise: { amount: 1-100 }"),
+      settings: applyFilterSettingsSchema.optional().describe("Settings for the selected filter. Unknown or mismatched settings are rejected."),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (params) => {
-    const script = buildApplyFilter(params);
+    const validated = applyFilterParamsSchema.safeParse(params);
+    if (!validated.success) return { isError: true, content: [{ type: "text" as const, text: validated.error.message }] };
+    const script = buildApplyFilter(validated.data);
     bridge.sendActivity({ type: "activity", id: "", tool: "apply_filter", summary: `Apply ${params.type} filter` });
     const result = await bridge.executeScript(script);
     if (!result.success) return { isError: true, content: [{ type: "text" as const, text: result.error || "Failed to apply filter" }] };

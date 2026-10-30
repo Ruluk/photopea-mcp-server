@@ -1,6 +1,8 @@
 // src/bridge/types.ts
 import type { WebSocket } from "ws";
 
+export type { ApplyAdjustmentParams, ApplyFilterParams } from "./operation-schemas.js";
+
 // --- WebSocket Protocol Messages ---
 
 /** Server -> Client: execute a Photopea script */
@@ -192,16 +194,6 @@ export interface PlaceImageParams {
   width?: number;
   height?: number;
   name?: string;
-}
-
-export interface ApplyAdjustmentParams {
-  type: string;
-  settings?: Record<string, number | string | boolean>;
-}
-
-export interface ApplyFilterParams {
-  type: string;
-  settings?: Record<string, number | string | boolean>;
 }
 
 export interface TransformLayerParams {
