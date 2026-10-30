@@ -11,7 +11,10 @@ describe("PhotopeaBridge", () => {
     bridge = new PhotopeaBridge(TEST_PORT);
     await bridge.start();
     await new Promise<void>((resolve) => {
-      clientWs = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
+      const browserUrl = new URL(bridge.getBrowserUrl());
+      clientWs = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`, ["photopea-mcp", browserUrl.hash.slice(1)], {
+        origin: browserUrl.origin,
+      });
       clientWs.on("open", () => resolve());
     });
     clientWs.send(JSON.stringify({ type: "status", status: "ready" }));
@@ -82,6 +85,25 @@ describe("PhotopeaBridge", () => {
     const result = await bridge.executeScript("saveToOE('png');", true);
     expect(result.success).toBe(true);
     expect("mimeType" in result).toBe(true);
+  });
+
+  it("returns failed file exports as file results", async () => {
+    clientWs.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "execute") {
+        clientWs.send(JSON.stringify({
+          id: msg.id,
+          type: "file",
+          success: false,
+          data: "",
+          mimeType: "application/octet-stream",
+          error: "Photopea did not return an exported file",
+        }));
+      }
+    });
+    const result = await bridge.executeScript("saveToOE('png');", true);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("exported file");
   });
 
   it("returns error when not connected", async () => {

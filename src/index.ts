@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { dirname, join, resolve } from "path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import { PhotopeaBridge } from "./bridge/websocket-server.js";
 import { createServer } from "./server.js";
 import { findAvailablePort } from "./utils/platform.js";
@@ -29,7 +29,13 @@ async function main(): Promise<void> {
 
   httpServer.on("request", (req, res) => {
     if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
-      res.writeHead(200, { "Content-Type": "text/html" });
+      res.writeHead(200, {
+        "Content-Type": "text/html",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Frame-Options": "DENY",
+      });
       res.end(frontendHtml);
       return;
     }
@@ -38,7 +44,8 @@ async function main(): Promise<void> {
   });
 
   await bridge.start();
-  console.error(`Photopea MCP bridge running on http://127.0.0.1:${port}`);
+  console.error(`Photopea MCP bridge running on http://127.0.0.1:${bridge.getPort()}`);
+  console.error(`Open this authenticated browser URL manually if needed: ${bridge.getBrowserUrl()}`);
 
   // Start MCP server over stdio (browser launches lazily on first tool call)
   const mcpServer = createServer(bridge);

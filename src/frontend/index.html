@@ -298,6 +298,7 @@
       var ws              = null;
       var wsReady         = false;
       var photopeaReady   = false;
+      var bridgeToken     = location.hash.slice(1);
       var entryCount      = 0;
       var reconnectDelay  = 1000;   // ms; doubles up to MAX_DELAY
       var MAX_DELAY       = 10000;
@@ -305,6 +306,7 @@
 
       // Per-execution buffering
       var pendingId       = null;
+      var pendingExpectFiles = false;
       var echoBuffer      = [];     // string messages from Photopea before "done"
       var fileBuffer      = null;   // ArrayBuffer from Photopea (last one wins)
 
@@ -326,7 +328,6 @@
         } else {
           dot.classList.remove('connected');
           statusText.textContent = 'Disconnected';
-          photopeaReady = false;
         }
       }
 
@@ -391,6 +392,11 @@
       // WebSocket connection
       // -----------------------------------------------------------------------
       function connect() {
+        if (!bridgeToken) {
+          statusText.textContent = 'Missing bridge credential — open the authenticated bridge URL';
+          return;
+        }
+
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
@@ -400,7 +406,7 @@
         var url = protocol + '//' + location.host;
 
         try {
-          ws = new WebSocket(url);
+          ws = new WebSocket(url, ['photopea-mcp', bridgeToken]);
         } catch (err) {
           scheduleReconnect();
           return;
@@ -467,6 +473,7 @@
       // -----------------------------------------------------------------------
       function handleExecute(msg) {
         pendingId   = msg.id;
+        pendingExpectFiles = msg.expectFiles === true;
         echoBuffer  = [];
         fileBuffer  = null;
 
@@ -564,6 +571,8 @@
 
         var id = pendingId;
         pendingId = null;
+        var resultData = echoBuffer.length > 0 ? echoBuffer.join('\n') : null;
+        var hasError = resultData !== null && /^(ReferenceError|TypeError|SyntaxError|Error|RangeError):/.test(resultData);
 
         if (fileBuffer !== null) {
           // File export result
@@ -578,12 +587,19 @@
             mimeType: mime,
             error:    null
           });
+        } else if (pendingExpectFiles) {
+          sendToWS({
+            type:     'file',
+            id:       id,
+            success:  false,
+            data:     '',
+            mimeType: 'application/octet-stream',
+            error:    resultData || 'Photopea did not return an exported file'
+          });
         } else {
           // Script result (echoToOE strings joined)
-          var resultData = echoBuffer.length > 0 ? echoBuffer.join('\n') : null;
           // Detect script errors: if the result contains an error pattern and
           // no explicit echoToOE('ok') was received, treat it as a failure.
-          var hasError = resultData !== null && /^(ReferenceError|TypeError|SyntaxError|Error|RangeError):/.test(resultData);
           sendToWS({
             type:    'result',
             id:      id,
@@ -595,6 +611,7 @@
 
         echoBuffer = [];
         fileBuffer = null;
+        pendingExpectFiles = false;
       }
 
       // -----------------------------------------------------------------------

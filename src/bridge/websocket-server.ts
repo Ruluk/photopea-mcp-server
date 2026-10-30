@@ -1,8 +1,9 @@
 // src/bridge/websocket-server.ts
 
-import { createServer, type Server as HttpServer } from "http";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
-import { randomUUID } from "crypto";
 import type {
   ActivityMessage,
   BridgeResult,
@@ -20,6 +21,7 @@ const READY_TIMEOUT_MS = 60_000;
 export class PhotopeaBridge {
   public readonly httpServer: HttpServer;
   public readonly wss: WebSocketServer;
+  private readonly token = randomBytes(32).toString("base64url");
   private client: WebSocket | null = null;
   private ready: boolean = false;
   private queue: PendingRequest[] = [];
@@ -35,42 +37,10 @@ export class PhotopeaBridge {
     // Create bare HTTP server; route handling is added externally via the entry point
     this.httpServer = createServer();
 
-    // Create WSS attached directly to the HTTP server (not noServer mode)
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    this.wss = new WebSocketServer({ noServer: true });
 
-    this.wss.on("connection", (ws: WebSocket) => {
-      // Accept the newest connection; silently release the old one
-      const prev = this.client;
-      this.client = ws;
-
-      if (prev && prev !== ws && prev.readyState === WebSocket.OPEN) {
-        // Silently terminate without triggering our close handler logic
-        prev.removeAllListeners();
-        prev.terminate();
-      }
-
-      ws.on("message", (raw) => {
-        try {
-          const msg = JSON.parse(raw.toString());
-          this.handleClientMessage(msg);
-        } catch {
-          // Ignore malformed messages
-        }
-      });
-
-      ws.on("close", () => {
-        // Only reset state if THIS ws is still the active client
-        if (this.client === ws) {
-          this.client = null;
-          this.ready = false;
-          this.rejectAllPending(new Error("Photopea client disconnected"));
-        }
-      });
-
-      ws.on("error", () => {
-        // Error is followed by close; handled there
-      });
-    });
+    this.httpServer.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
+    this.wss.on("connection", (ws: WebSocket) => this.handleConnection(ws));
   }
 
   // ---------------------------------------------------------------------------
@@ -85,6 +55,10 @@ export class PhotopeaBridge {
     return this.port;
   }
 
+  getBrowserUrl(): string {
+    return `http://127.0.0.1:${this.port}/#${this.token}`;
+  }
+
   isReady(): boolean {
     return this.client !== null && this.ready;
   }
@@ -96,7 +70,7 @@ export class PhotopeaBridge {
     // Lazy-launch browser on first tool call
     if (!this.browserLaunched) {
       this.browserLaunched = true;
-      const url = `http://127.0.0.1:${this.port}`;
+      const url = this.getBrowserUrl();
       console.error(`Launching browser: ${url}`);
       launchBrowser(url).catch(() => {
         console.error(`Could not auto-launch browser. Please open ${url}`);
@@ -107,7 +81,7 @@ export class PhotopeaBridge {
       let settled = false;
       const timer = setTimeout(() => {
         settled = true;
-        reject(new Error(`Photopea did not become ready within ${READY_TIMEOUT_MS / 1000}s. Please open http://127.0.0.1:${this.port} and wait for Photopea to load.`));
+        reject(new Error(`Photopea did not become ready within ${READY_TIMEOUT_MS / 1000}s. Please open ${this.getBrowserUrl()} and wait for Photopea to load.`));
       }, READY_TIMEOUT_MS);
       const check = () => {
         if (settled) return;
@@ -128,7 +102,11 @@ export class PhotopeaBridge {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.httpServer.listen(this.port, "127.0.0.1", () => resolve());
+      this.httpServer.listen(this.port, "127.0.0.1", () => {
+        const address = this.httpServer.address();
+        if (address && typeof address !== "string") this.port = address.port;
+        resolve();
+      });
       this.httpServer.once("error", reject);
     });
   }
@@ -198,7 +176,7 @@ export class PhotopeaBridge {
         if (wasActive) this.processNext();
       }, timeoutMs);
 
-      const pending: PendingRequest = { id, resolve, reject, expectFiles, timer };
+      const pending: PendingRequest = { id, resolve, reject, expectFiles, client: null, timer };
 
       this.pendingScripts.set(id, script);
       this.queue.push(pending);
@@ -250,6 +228,7 @@ export class PhotopeaBridge {
         resolve: resolve as (v: BridgeResult | BridgeFileResult) => void,
         reject: () => {},
         expectFiles: false,
+        client: null,
         timer,
       };
 
@@ -275,6 +254,7 @@ export class PhotopeaBridge {
       this.pendingLoads.delete(next.id);
       this.processing = true;
       if (this.client.readyState === WebSocket.OPEN) {
+        next.client = this.client;
         this.client.send(loadMsg);
       } else {
         // Client gone; resolve with error and continue
@@ -306,6 +286,7 @@ export class PhotopeaBridge {
     };
 
     if (this.client.readyState === WebSocket.OPEN) {
+      next.client = this.client;
       this.client.send(JSON.stringify(msg));
     } else {
       // Client gone; resolve with error and continue
@@ -322,46 +303,57 @@ export class PhotopeaBridge {
   // Incoming message handler
   // ---------------------------------------------------------------------------
 
-  private handleClientMessage(msg: Record<string, unknown>): void {
+  private handleClientMessage(client: WebSocket, msg: Record<string, unknown>): void {
+    if (client !== this.client || !msg || typeof msg !== "object") return;
+
     if (msg.type === "status") {
       if (msg.status === "ready") {
         this.ready = true;
+      } else if (msg.status === "disconnected") {
+        this.ready = false;
       }
       return;
     }
 
-    if (msg.type === "result" || msg.type === "file") {
-      const id = msg.id as string;
-      const pendingIndex = this.queue.findIndex((r) => r.id === id);
+    if (msg.type !== "result" && msg.type !== "file") return;
+    if (!this.isValidResponse(msg)) return;
 
-      if (pendingIndex === -1) return; // Already resolved (e.g. timed out)
+    const pending = this.queue[0];
+    if (
+      !pending ||
+      pending.id !== msg.id ||
+      pending.client !== client ||
+      pending.expectFiles !== (msg.type === "file")
+    ) return;
 
-      const pending = this.queue[pendingIndex];
-      clearTimeout(pending.timer);
-      this.queue.splice(pendingIndex, 1);
-      this.pendingScripts.delete(id);
-      this.pendingLoads.delete(id);
-      this.processing = false;
+    this.completePendingResponse(pending, msg);
+  }
 
-      if (msg.type === "file") {
-        const result: BridgeFileResult = {
-          success: (msg.success as boolean) ?? false,
-          data: Buffer.from((msg.data as string) ?? "", "base64"),
-          mimeType: (msg.mimeType as string) ?? "application/octet-stream",
-          error: (msg.error as string | null) ?? null,
-        };
-        pending.resolve(result);
-      } else {
-        const result: BridgeResult = {
-          success: (msg.success as boolean) ?? false,
-          data: (msg.data as string | null) ?? null,
-          error: (msg.error as string | null) ?? null,
-        };
-        pending.resolve(result);
-      }
+  private completePendingResponse(pending: PendingRequest, msg: Record<string, unknown>): void {
+    clearTimeout(pending.timer);
+    this.queue.shift();
+    this.pendingScripts.delete(pending.id);
+    this.pendingLoads.delete(pending.id);
+    this.processing = false;
 
-      this.processNext();
+    if (msg.type === "file") {
+      const result: BridgeFileResult = {
+        success: msg.success as boolean,
+        data: Buffer.from(msg.data as string, "base64"),
+        mimeType: msg.mimeType as string,
+        error: msg.error as string | null,
+      };
+      pending.resolve(result);
+    } else {
+      const result: BridgeResult = {
+        success: msg.success as boolean,
+        data: msg.data as string | null,
+        error: msg.error as string | null,
+      };
+      pending.resolve(result);
     }
+
+    this.processNext();
   }
 
   // ---------------------------------------------------------------------------
@@ -384,5 +376,80 @@ export class PhotopeaBridge {
         error: error.message,
       });
     }
+  }
+
+  private isAuthenticatedUpgrade(req: IncomingMessage): boolean {
+    const origin = `http://127.0.0.1:${this.port}`;
+    const protocolsHeader = req.headers["sec-websocket-protocol"];
+    const protocols = (Array.isArray(protocolsHeader) ? protocolsHeader.join(",") : protocolsHeader ?? "")
+      .split(",")
+      .map((protocol) => protocol.trim());
+
+    if (
+      req.url !== "/" ||
+      req.headers.host !== `127.0.0.1:${this.port}` ||
+      req.headers.origin !== origin ||
+      !protocols.includes("photopea-mcp")
+    ) return false;
+
+    const expectedToken = Buffer.from(this.token);
+    return protocols.some((protocol) => {
+      const candidate = Buffer.from(protocol);
+      return candidate.length === expectedToken.length && timingSafeEqual(candidate, expectedToken);
+    });
+  }
+
+  private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    if (!this.isAuthenticatedUpgrade(req)) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+
+    this.wss.handleUpgrade(req, socket, head, (ws) => {
+      this.wss.emit("connection", ws, req);
+    });
+  }
+
+  private handleConnection(ws: WebSocket): void {
+    const previousClient = this.client;
+    this.client = ws;
+    this.ready = false;
+
+    if (previousClient && previousClient !== ws) {
+      previousClient.terminate();
+      this.rejectAllPending(new Error("Photopea client replaced"));
+    }
+
+    ws.on("message", (raw) => {
+      try {
+        this.handleClientMessage(ws, JSON.parse(raw.toString()));
+      } catch {
+        // Ignore malformed messages
+      }
+    });
+
+    ws.on("close", () => {
+      if (this.client === ws) {
+        this.client = null;
+        this.ready = false;
+        this.rejectAllPending(new Error("Photopea client disconnected"));
+      }
+    });
+
+    ws.on("error", () => {
+      // Error is followed by close; handled there
+    });
+  }
+
+  private isValidResponse(msg: Record<string, unknown>): boolean {
+    if (
+      typeof msg.id !== "string" ||
+      typeof msg.success !== "boolean" ||
+      !(typeof msg.error === "string" || msg.error === null)
+    ) return false;
+
+    return msg.type === "file"
+      ? typeof msg.data === "string" && typeof msg.mimeType === "string"
+      : typeof msg.data === "string" || msg.data === null;
   }
 }

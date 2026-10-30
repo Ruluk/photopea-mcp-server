@@ -1,4 +1,5 @@
 // src/bridge/types.ts
+import type { WebSocket } from "ws";
 
 // --- WebSocket Protocol Messages ---
 
@@ -78,6 +79,7 @@ export interface PendingRequest {
   resolve: (value: BridgeResult | BridgeFileResult) => void;
   reject: (reason: Error) => void;
   expectFiles: boolean;
+  client: WebSocket | null;
   timer: ReturnType<typeof setTimeout>;
 }
 

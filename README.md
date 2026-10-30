@@ -35,7 +35,7 @@ graph LR
 
 Your agent sends editing commands through the MCP protocol. The server translates these into Photopea JavaScript API calls and executes them via a WebSocket bridge to the browser.
 
-**Note:** A browser window will open automatically on the first tool call. This is expected -- Photopea runs entirely in the browser and the server needs it to perform image editing operations.
+**Note:** A browser window will open automatically on the first tool call. This is expected -- Photopea runs entirely in the browser and the server needs it to perform image editing operations. If opening it manually, use the authenticated browser URL printed by the server; its fragment is a per-run credential, so do not share the complete URL. The browser sends that credential only in the local WebSocket handshake. The bridge accepts only its exact loopback origin and serves a non-cacheable page that cannot be embedded.
 
 ## Quick Start
 
