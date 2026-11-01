@@ -307,6 +307,8 @@
       // Per-execution buffering
       var pendingId       = null;
       var pendingExpectFiles = false;
+        var pendingMarker = null;
+        var pendingStarted = false;
       var echoBuffer      = [];     // string messages from Photopea before "done"
       var fileBuffer      = null;   // ArrayBuffer from Photopea (last one wins)
 
@@ -476,8 +478,10 @@
         pendingExpectFiles = msg.expectFiles === true;
         echoBuffer  = [];
         fileBuffer  = null;
+          pendingMarker = 'photopea-mcp-start:' + msg.id;
+          pendingStarted = false;
 
-        sendToPhotopea(msg.script);
+          sendToPhotopea( 'app.echoToOE(' + JSON.stringify( pendingMarker ) + ');\n' + msg.script );
       }
 
       function sendToPhotopea(payload) {
@@ -517,6 +521,8 @@
         // The load operation completes when Photopea sends "done"
         // We treat it as a pending request so we wait for "done" then ACK
         pendingId  = id;
+          pendingMarker = null;
+          pendingStarted = true;
         echoBuffer = [];
         fileBuffer = null;
       }
@@ -530,9 +536,16 @@
         if (!iframe || (iframe.contentWindow && event.source !== iframe.contentWindow)) return;
         var data = event.data;
 
-        // Any message from Photopea means it's loaded — mark ready on first contact
+          // Wait for Photopea's initial completion message before sending scripts.
         if (!photopeaReady) {
-          handlePhotopea_done();
+            if ( data === 'done' ) handlePhotopea_done();
+            return;
+        }
+
+          if ( pendingId === null ) return;
+          if ( !pendingStarted ) {
+              if ( data === pendingMarker ) pendingStarted = true;
+              return;
         }
 
         // ArrayBuffer = exported file data
@@ -612,6 +625,8 @@
         echoBuffer = [];
         fileBuffer = null;
         pendingExpectFiles = false;
+          pendingMarker = null;
+          pendingStarted = false;
       }
 
       // -----------------------------------------------------------------------

@@ -47,6 +47,18 @@ Then start a new Claude Code session and ask it to edit images. The Photopea edi
 
 ## Installation
 
+### Docker
+
+Build the image with `docker build -t photopea-mcp-server:latest .`. It runs
+Firefox headlessly inside the container; no browser window or published port is
+needed. Run the MCP server with `docker run --rm -i photopea-mcp-server:latest`.
+
+Local file paths refer to the container filesystem. Mount a host directory at
+the same absolute path to open or export files there, and ensure it is writable
+by the container's `node` user (UID 1000). For example, add
+`-v /absolute/path:/absolute/path` to `docker run`. Paths outside mounted
+directories are not available on the host.
+
 ### Claude Code
 
 **npx (recommended):**
